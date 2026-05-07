@@ -1,170 +1,70 @@
 /* ============================================================
-   KIU-Learners Pace — app.js
-   Firebase Firestore backend — cross-device, cross-browser
-   Admin sees ALL students from any device/location
+   KIU-Learners Pace — Application Logic (app.js)
+   SPA | LocalStorage-backed | GitHub-Pages compatible
    ============================================================ */
 
 /* ── CONSTANTS ── */
-const ADMIN_CREDS  = { username: "kiu.admin", password: "KIU@Admin2025!" };
-const SESSION_KEY  = "kiu_session_v3";   // localStorage: current logged-in user only
-const DEMO_KEY     = "kiu_demo_v3";      // localStorage: fallback when Firebase not configured
+const ADMIN = { username: "kiu.admin", password: "KIU@Admin2025!" };
+const STORAGE_KEY = "kiu_lms_v2";
+const LOG_KEY = "kiu_lms_logs_v2";
+const PAGE_MIN = 10; // minimum "pages" before quiz unlocks (simulated by scroll %)
 
-/* ── FIREBASE STATE ── */
-let db        = null;
-let FB_READY  = false;
-let DEMO_MODE = false;   // true when Firebase config not yet filled in
-
-/* ── APP STATE ── */
+/* ── STATE ── */
 let APP = {
-  currentUser:   null,
-  isAdmin:       false,
+  currentUser: null,
+  isAdmin: false,
   currentModule: null,
+  currentQuiz: null,
   currentQIndex: 0,
-  quizAnswers:   [],
+  attemptCount: 0,
+  quizAnswers: [],
+  scrollPercent: 0,
 };
 
 /* ─────────────────────────────────────────────
-   FIREBASE INIT
+   STORAGE HELPERS
 ───────────────────────────────────────────── */
-function initFirebase() {
-  const cfg = window.KIU_FIREBASE_CONFIG || {};
-  const isPlaceholder = !cfg.apiKey || cfg.apiKey.includes("PASTE_YOUR");
+function getDB() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || { users: {}, progress: {} }; }
+  catch { return { users: {}, progress: {} }; }
+}
+function saveDB(db) { localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); }
 
-  if (isPlaceholder) {
-    DEMO_MODE = true;
-    console.warn("[KIU-LMS] Firebase not configured — running in Demo Mode (localStorage only).");
-    return;
-  }
+function getLogs() {
+  try { return JSON.parse(localStorage.getItem(LOG_KEY)) || []; }
+  catch { return []; }
+}
+function addLog(entry) {
+  const logs = getLogs();
+  logs.unshift({ ...entry, ts: new Date().toISOString() });
+  if (logs.length > 2000) logs.length = 2000;
+  localStorage.setItem(LOG_KEY, JSON.stringify(logs));
+}
 
-  try {
-    if (!firebase.apps.length) firebase.initializeApp(cfg);
-    db = firebase.firestore();
-    FB_READY = true;
-    console.info("[KIU-LMS] Firebase Firestore connected ✅");
-  } catch (err) {
-    DEMO_MODE = true;
-    console.error("[KIU-LMS] Firebase init failed — Demo Mode:", err);
-  }
+function getUserProgress(username) {
+  const db = getDB();
+  if (!db.progress[username]) db.progress[username] = {};
+  return db.progress[username];
+}
+function saveProgress(username, data) {
+  const db = getDB();
+  if (!db.progress[username]) db.progress[username] = {};
+  Object.assign(db.progress[username], data);
+  saveDB(db);
+}
+function getModuleProgress(username, moduleId) {
+  const p = getUserProgress(username);
+  return p[`mod_${moduleId}`] || { status: "locked", score: null, attempts: 0, completedAt: null };
+}
+function saveModuleProgress(username, moduleId, data) {
+  const p = getUserProgress(username);
+  p[`mod_${moduleId}`] = { ...(p[`mod_${moduleId}`] || {}), ...data };
+  saveProgress(username, p);
 }
 
 /* ─────────────────────────────────────────────
-   FIRESTORE HELPERS
-   All reads/writes go through these.
-   Falls back to localStorage in Demo Mode.
+   ROUTING
 ───────────────────────────────────────────── */
-
-/** Get demo DB from localStorage */
-function demoGetDB() {
-  try { return JSON.parse(localStorage.getItem(DEMO_KEY)) || { students: {}, logs: [] }; }
-  catch { return { students: {}, logs: [] }; }
-}
-function demoSaveDB(d) { localStorage.setItem(DEMO_KEY, JSON.stringify(d)); }
-
-/** Fetch one student document */
-async function fsGetStudent(sid) {
-  if (!FB_READY) {
-    const d = demoGetDB();
-    return d.students[sid.toLowerCase()] || null;
-  }
-  const snap = await db.collection("students").doc(sid.toLowerCase()).get();
-  return snap.exists ? snap.data() : null;
-}
-
-/** Save / merge student document */
-async function fsSaveStudent(sid, data) {
-  if (!FB_READY) {
-    const d = demoGetDB();
-    d.students[sid.toLowerCase()] = { ...(d.students[sid.toLowerCase()] || {}), ...data };
-    demoSaveDB(d);
-    return;
-  }
-  await db.collection("students").doc(sid.toLowerCase()).set(data, { merge: true });
-}
-
-/** Fetch ALL students (admin only) */
-async function fsGetAllStudents() {
-  if (!FB_READY) {
-    const d = demoGetDB();
-    return Object.values(d.students);
-  }
-  const snap = await db.collection("students").orderBy("registeredAt", "desc").get();
-  return snap.docs.map(d => d.data());
-}
-
-/** Save a log entry */
-async function fsAddLog(entry) {
-  const logEntry = { ...entry, ts: new Date().toISOString() };
-  if (!FB_READY) {
-    const d = demoGetDB();
-    d.logs.unshift(logEntry);
-    if (d.logs.length > 3000) d.logs.length = 3000;
-    demoSaveDB(d);
-    return;
-  }
-  await db.collection("logs").add(logEntry);
-}
-
-/** Fetch recent logs (admin only) */
-async function fsGetLogs(limit = 100) {
-  if (!FB_READY) {
-    const d = demoGetDB();
-    return d.logs.slice(0, limit);
-  }
-  const snap = await db.collection("logs")
-    .orderBy("ts", "desc")
-    .limit(limit)
-    .get();
-  return snap.docs.map(d => d.data());
-}
-
-/** Clear all logs (admin) */
-async function fsClearLogs() {
-  if (!FB_READY) {
-    const d = demoGetDB(); d.logs = []; demoSaveDB(d); return;
-  }
-  const snap = await db.collection("logs").limit(500).get();
-  const batch = db.batch();
-  snap.docs.forEach(doc => batch.delete(doc.ref));
-  await batch.commit();
-}
-
-/* Shortcut helpers for progress inside student doc */
-function getModProg(studentData, moduleId) {
-  return (studentData.progress || {})[`mod_${moduleId}`] || { status: "locked", score: null, pass: false };
-}
-function setModProg(studentData, moduleId, data) {
-  if (!studentData.progress) studentData.progress = {};
-  studentData.progress[`mod_${moduleId}`] = {
-    ...(studentData.progress[`mod_${moduleId}`] || {}),
-    ...data
-  };
-}
-
-/* ─────────────────────────────────────────────
-   SESSION (current device only)
-───────────────────────────────────────────── */
-function saveSession(user) { localStorage.setItem(SESSION_KEY, JSON.stringify(user)); }
-function clearSession()    { localStorage.removeItem(SESSION_KEY); }
-function loadSession()     { try { return JSON.parse(localStorage.getItem(SESSION_KEY)); } catch { return null; } }
-
-/* ─────────────────────────────────────────────
-   DOM HELPERS
-───────────────────────────────────────────── */
-function el(tag, attrs = {}, ...children) {
-  const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (k === "class") e.className = v;
-    else if (k === "style") e.style.cssText = v;
-    else if (k.startsWith("on") && typeof v === "function") e.addEventListener(k.slice(2), v);
-    else e.setAttribute(k, v);
-  }
-  children.forEach(c => {
-    if (c == null) return;
-    if (typeof c === "string") e.insertAdjacentHTML("beforeend", c);
-    else e.appendChild(c);
-  });
-  return e;
-}
 function render(view) {
   const app = document.getElementById("app");
   app.innerHTML = "";
@@ -175,47 +75,42 @@ function render(view) {
    TOAST
 ───────────────────────────────────────────── */
 function toast(msg, type = "success") {
-  let wrap = document.getElementById("kiu-toast-wrap");
+  let wrap = document.getElementById("toast-wrap");
   if (!wrap) {
-    wrap = el("div", { id: "kiu-toast-wrap", class: "toast-wrap" });
+    wrap = el("div", { id: "toast-wrap", class: "toast-wrap" });
     document.body.appendChild(wrap);
   }
-  const icons = { success: "✅", error: "❌", info: "ℹ️", warn: "⚠️" };
+  const icons = { success: "✅", error: "❌", info: "ℹ️" };
   const t = el("div", { class: `toast ${type}` }, `${icons[type] || ""} ${msg}`);
   wrap.appendChild(t);
-  setTimeout(() => { t.classList.add("removing"); setTimeout(() => t.remove(), 350); }, 3400);
+  setTimeout(() => { t.classList.add("removing"); setTimeout(() => t.remove(), 350); }, 3200);
 }
 
 /* ─────────────────────────────────────────────
-   LOADING OVERLAY
+   DOM HELPERS
 ───────────────────────────────────────────── */
-function showLoading(msg = "Loading…") {
-  let ov = document.getElementById("kiu-loading");
-  if (!ov) {
-    ov = el("div", { id: "kiu-loading", style: "position:fixed;inset:0;z-index:9999;background:rgba(10,40,20,.65);backdrop-filter:blur(4px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;" });
-    ov.innerHTML = `<div style="width:48px;height:48px;border:4px solid rgba(255,255,255,.2);border-top-color:#4cc87a;border-radius:50%;animation:spin .8s linear infinite;"></div><p style="color:white;font-family:var(--font-body);font-size:.95rem;" id="kiu-load-msg">${msg}</p>`;
-    if (!document.getElementById("kiu-spin-style")) {
-      const s = document.createElement("style");
-      s.id = "kiu-spin-style";
-      s.textContent = "@keyframes spin{to{transform:rotate(360deg)}}";
-      document.head.appendChild(s);
-    }
-    document.body.appendChild(ov);
-  } else {
-    const m = ov.querySelector("#kiu-load-msg");
-    if (m) m.textContent = msg;
+function el(tag, attrs = {}, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v;
+    else if (k === "style") e.style.cssText = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
   }
+  children.forEach(c => {
+    if (c == null) return;
+    if (typeof c === "string") e.insertAdjacentHTML("beforeend", c);
+    else e.appendChild(c);
+  });
+  return e;
 }
-function hideLoading() {
-  const ov = document.getElementById("kiu-loading");
-  if (ov) ov.remove();
-}
+function qs(sel, ctx = document) { return ctx.querySelector(sel); }
 
 /* ─────────────────────────────────────────────
    TOPBAR
 ───────────────────────────────────────────── */
-function buildTopbar(userName, isAdmin) {
-  const initials = isAdmin ? "AD" : userName.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
+function buildTopbar(user, isAdmin) {
+  const initials = isAdmin ? "AD" : user.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
   const topbar = el("nav", { class: "topbar" });
   topbar.innerHTML = `
     <div class="topbar-brand">
@@ -223,65 +118,22 @@ function buildTopbar(userName, isAdmin) {
       <div class="topbar-title">KIU-Learners Pace<span>Kampala International University</span></div>
     </div>
     <div class="topbar-right">
-      ${DEMO_MODE ? `<span style="background:#d4a017;color:#3a2800;font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:99px;letter-spacing:.04em;">⚠ DEMO MODE</span>` : `<span style="background:rgba(76,200,122,.15);color:#4cc87a;font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:99px;letter-spacing:.04em;">🟢 LIVE</span>`}
       <div class="topbar-user">
         <div class="avatar">${initials}</div>
-        <span style="color:rgba(255,255,255,.85);font-size:.88rem;">${isAdmin ? "Administrator" : userName}</span>
+        <span style="color:rgba(255,255,255,.85);font-size:.88rem;">${isAdmin ? "Administrator" : user}</span>
       </div>
       <button class="btn btn-outline" id="logout-btn">Sign Out</button>
-    </div>`;
+    </div>
+  `;
   topbar.querySelector("#logout-btn").onclick = logout;
   return topbar;
-}
-
-/* ─────────────────────────────────────────────
-   FIREBASE SETUP SCREEN
-───────────────────────────────────────────── */
-function showSetupScreen() {
-  const page = el("div");
-  page.innerHTML = `
-  <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,var(--kiu-green-deep),var(--kiu-green));padding:24px;">
-    <div style="background:white;border-radius:var(--radius-xl);padding:48px 44px;max-width:560px;width:100%;box-shadow:var(--shadow-lg);animation:fadeUp .5s ease both;">
-      <div style="text-align:center;margin-bottom:32px;">
-        <img src="assets/kiu-logo.jpg" style="width:90px;border-radius:10px;margin-bottom:16px;">
-        <h1 style="font-family:var(--font-display);font-size:1.7rem;color:var(--kiu-green-deep);">Firebase Setup Required</h1>
-        <p style="color:var(--text-muted);margin-top:6px;font-size:.92rem;">To store student data centrally (visible from any device), connect a free Firebase project.</p>
-      </div>
-
-      <div style="background:var(--kiu-green-pale);border-radius:var(--radius-md);padding:20px 22px;margin-bottom:24px;">
-        <p style="font-weight:700;color:var(--kiu-green-deep);margin-bottom:12px;">📋 One-time setup steps:</p>
-        <ol style="font-size:.88rem;color:var(--text-mid);line-height:1.9;padding-left:18px;">
-          <li>Go to <a href="https://console.firebase.google.com" target="_blank" style="color:var(--kiu-green);font-weight:600;">console.firebase.google.com</a></li>
-          <li>Click <strong>"Add project"</strong> → name it <em>kiu-lms</em> → Create</li>
-          <li>Click the <strong>&lt;/&gt;</strong> (Web) icon → Register app → Copy the config</li>
-          <li>Open <code style="background:white;padding:2px 6px;border-radius:4px;font-size:.85em;">js/firebase-config.js</code> and paste your values</li>
-          <li>In Firebase: <strong>Build → Firestore Database → Create</strong> (Test mode)</li>
-          <li>Paste the security rules shown in firebase-config.js → Publish</li>
-          <li>Reload this page</li>
-        </ol>
-      </div>
-
-      <div style="background:#fff8e1;border:1.5px solid #f5c842;border-radius:var(--radius-md);padding:16px 20px;margin-bottom:24px;">
-        <p style="font-size:.85rem;color:#7a5c00;font-weight:600;">⚡ Firebase Free Tier is more than enough:</p>
-        <p style="font-size:.82rem;color:#9a7000;margin-top:4px;">50,000 reads/day · 20,000 writes/day · 1 GB storage · No credit card needed</p>
-      </div>
-
-      <div style="display:flex;gap:12px;flex-wrap:wrap;">
-        <a href="https://console.firebase.google.com" target="_blank" class="btn btn-primary btn-lg" style="flex:1;justify-content:center;">Open Firebase Console ↗</a>
-        <button class="btn btn-green btn-lg" id="demo-btn" style="flex:1;">Use Demo Mode</button>
-      </div>
-      <p style="text-align:center;font-size:.78rem;color:var(--text-muted);margin-top:14px;">Demo Mode stores data locally on this device only — admin won't see other devices' students.</p>
-    </div>
-  </div>`;
-  page.querySelector("#demo-btn").onclick = () => { DEMO_MODE = true; showLogin(); };
-  render(page);
 }
 
 /* ─────────────────────────────────────────────
    LOGIN PAGE
 ───────────────────────────────────────────── */
 function showLogin() {
-  const page = el("div");
+  const page = document.createElement("div");
   page.innerHTML = `
   <div class="login-page" style="min-height:100vh;">
     <div class="login-hero">
@@ -294,7 +146,6 @@ function showLogin() {
         <span class="badge badge-gold">🏆 Track Progress</span>
         <span class="badge">🌐 ICT 1101</span>
       </div>
-      ${DEMO_MODE ? `<div style="background:rgba(212,160,23,.25);border:1px solid var(--kiu-gold);border-radius:var(--radius-sm);padding:10px 16px;max-width:320px;text-align:center;margin-top:8px;"><p style="color:var(--kiu-gold-light);font-size:.8rem;font-weight:600;">⚠ Running in Demo Mode — data stored locally only.<br>Configure Firebase for cross-device access.</p></div>` : `<div style="background:rgba(76,200,122,.15);border:1px solid rgba(76,200,122,.4);border-radius:var(--radius-sm);padding:8px 16px;"><p style="color:#4cc87a;font-size:.8rem;font-weight:600;">🟢 Connected to Cloud Database</p></div>`}
     </div>
     <div class="login-panel">
       <div class="login-card">
@@ -310,144 +161,132 @@ function showLogin() {
         <div id="student-form">
           <div class="form-group">
             <label class="form-label">Full Name</label>
-            <input class="form-input" id="stu-name" type="text" placeholder="e.g. Nakato Sarah" maxlength="60" autocomplete="name">
+            <input class="form-input" id="stu-name" type="text" placeholder="e.g. Nakato Sarah" maxlength="60">
           </div>
           <div class="form-group">
             <label class="form-label">Student Number</label>
-            <input class="form-input" id="stu-id" type="text" placeholder="e.g. KIU/2024/001" maxlength="30" autocomplete="username">
+            <input class="form-input" id="stu-id" type="text" placeholder="e.g. KIU/2024/001" maxlength="30">
           </div>
           <div class="form-group">
             <label class="form-label">Password</label>
-            <input class="form-input" id="stu-pass" type="password" placeholder="Create or enter your password" autocomplete="current-password">
+            <input class="form-input" id="stu-pass" type="password" placeholder="Create or enter your password">
           </div>
           <button class="btn btn-primary btn-block btn-lg" id="stu-login-btn" style="margin-top:8px;">Start Learning →</button>
         </div>
         <div id="admin-form" class="hidden">
           <div class="form-group">
             <label class="form-label">Admin Username</label>
-            <input class="form-input" id="adm-user" type="text" placeholder="kiu.admin" autocomplete="username">
+            <input class="form-input" id="adm-user" type="text" placeholder="kiu.admin">
           </div>
           <div class="form-group">
             <label class="form-label">Admin Password</label>
-            <input class="form-input" id="adm-pass" type="password" placeholder="Enter admin password" autocomplete="current-password">
+            <input class="form-input" id="adm-pass" type="password" placeholder="Enter admin password">
           </div>
           <button class="btn btn-primary btn-block btn-lg" id="adm-login-btn" style="margin-top:8px;">Access Dashboard →</button>
         </div>
         <div class="divider"></div>
-        <p style="text-align:center;font-size:.78rem;color:var(--text-muted);">Introduction to Computing — ICT 1101 &nbsp;|&nbsp; © 2025 KIU</p>
+        <p style="text-align:center;font-size:.78rem;color:var(--text-muted);">Introduction to Computing — ICT 1101 | © 2025 KIU</p>
       </div>
     </div>
   </div>`;
 
-  const errBox  = page.querySelector("#form-error");
-  const tabStu  = page.querySelector("#tab-student");
-  const tabAdm  = page.querySelector("#tab-admin");
+  const tabStu = page.querySelector("#tab-student");
+  const tabAdm = page.querySelector("#tab-admin");
   const stuForm = page.querySelector("#student-form");
   const admForm = page.querySelector("#admin-form");
+  const errBox = page.querySelector("#form-error");
 
-  const showErr  = msg => { errBox.textContent = msg; errBox.classList.add("show"); };
-  const hideErr  = ()  => errBox.classList.remove("show");
+  function showErr(msg) { errBox.textContent = msg; errBox.classList.add("show"); }
+  function hideErr() { errBox.classList.remove("show"); }
 
-  tabStu.onclick = () => { tabStu.classList.add("active"); tabAdm.classList.remove("active"); stuForm.classList.remove("hidden"); admForm.classList.add("hidden"); hideErr(); };
-  tabAdm.onclick = () => { tabAdm.classList.add("active"); tabStu.classList.remove("active"); admForm.classList.remove("hidden"); stuForm.classList.add("hidden"); hideErr(); };
-
-  /* ── STUDENT LOGIN ── */
-  page.querySelector("#stu-login-btn").onclick = async () => {
-    const name = page.querySelector("#stu-name").value.trim();
-    const sid  = page.querySelector("#stu-id").value.trim().toUpperCase();
-    const pass = page.querySelector("#stu-pass").value;
-    if (!name || !sid || !pass) { showErr("Please fill in all fields."); return; }
-    if (name.length < 3)         { showErr("Please enter your full name."); return; }
-    if (pass.length < 4)         { showErr("Password must be at least 4 characters."); return; }
-
-    showLoading("Signing in…");
-    try {
-      const existing = await fsGetStudent(sid);
-      const pHash = btoa(encodeURIComponent(pass));
-
-      if (existing) {
-        if (existing.passwordHash !== pHash) { hideLoading(); showErr("Incorrect password for this student number."); return; }
-        if (existing.name.toLowerCase() !== name.toLowerCase()) { hideLoading(); showErr("Name does not match this student number."); return; }
-      } else {
-        // New registration
-        const newStudent = {
-          name, sid,
-          passwordHash: pHash,
-          registeredAt: new Date().toISOString(),
-          progress: { mod_1: { status: "unlocked" } }
-        };
-        await fsSaveStudent(sid, newStudent);
-        await fsAddLog({ type: "registration", user: name, sid, message: `${name} (${sid}) registered.` });
-      }
-      await fsAddLog({ type: "login", user: name, sid, message: `${name} (${sid}) signed in.` });
-      APP.currentUser = { name, sid };
-      APP.isAdmin = false;
-      saveSession({ name, sid, isAdmin: false });
-      hideLoading();
-      showDashboard();
-    } catch (err) {
-      hideLoading();
-      console.error(err);
-      showErr("Connection error. Check your internet connection and try again.");
-    }
+  tabStu.onclick = () => {
+    tabStu.classList.add("active"); tabAdm.classList.remove("active");
+    stuForm.classList.remove("hidden"); admForm.classList.add("hidden"); hideErr();
+  };
+  tabAdm.onclick = () => {
+    tabAdm.classList.add("active"); tabStu.classList.remove("active");
+    admForm.classList.remove("hidden"); stuForm.classList.add("hidden"); hideErr();
   };
 
-  /* ── ADMIN LOGIN ── */
-  page.querySelector("#adm-login-btn").onclick = async () => {
+  page.querySelector("#stu-login-btn").onclick = () => {
+    const name = page.querySelector("#stu-name").value.trim();
+    const sid = page.querySelector("#stu-id").value.trim();
+    const pass = page.querySelector("#stu-pass").value;
+    if (!name || !sid || !pass) { showErr("Please fill in all fields."); return; }
+    if (name.length < 3) { showErr("Please enter your full name."); return; }
+    const db = getDB();
+    const key = sid.toLowerCase();
+    if (db.users[key]) {
+      if (db.users[key].password !== btoa(pass)) { showErr("Incorrect password for this student number."); return; }
+      if (db.users[key].name !== name) { showErr("Name does not match this student number."); return; }
+    } else {
+      db.users[key] = { name, sid, password: btoa(pass), registeredAt: new Date().toISOString() };
+      saveDB(db);
+      addLog({ type: "registration", user: name, sid, message: `${name} registered.` });
+    }
+    APP.currentUser = { name, sid };
+    APP.isAdmin = false;
+    addLog({ type: "login", user: name, sid, message: `${name} signed in.` });
+    // Unlock module 1 if not already
+    const mp = getModuleProgress(sid, 1);
+    if (mp.status === "locked") saveModuleProgress(sid, 1, { status: "unlocked" });
+    showDashboard();
+  };
+
+  // Enter key support
+  ["stu-name","stu-id","stu-pass"].forEach(id => {
+    page.querySelector(`#${id}`).addEventListener("keydown", e => { if(e.key==="Enter") page.querySelector("#stu-login-btn").click(); });
+  });
+
+  page.querySelector("#adm-login-btn").onclick = () => {
     const u = page.querySelector("#adm-user").value.trim();
     const p = page.querySelector("#adm-pass").value;
-    if (u !== ADMIN_CREDS.username || p !== ADMIN_CREDS.password) { showErr("Invalid administrator credentials."); return; }
-    showLoading("Loading admin dashboard…");
-    await fsAddLog({ type: "admin_login", user: "Administrator", message: "Admin signed in." });
+    if (u !== ADMIN.username || p !== ADMIN.password) { showErr("Invalid administrator credentials."); return; }
     APP.isAdmin = true;
     APP.currentUser = { name: "Administrator", sid: "admin" };
-    saveSession({ name: "Administrator", sid: "admin", isAdmin: true });
-    hideLoading();
+    addLog({ type: "admin_login", user: "Administrator", message: "Admin signed in." });
     showAdminDashboard();
   };
 
-  ["stu-name","stu-id","stu-pass"].forEach(id => page.querySelector(`#${id}`).addEventListener("keydown", e => { if (e.key === "Enter") page.querySelector("#stu-login-btn").click(); }));
-  ["adm-user","adm-pass"].forEach(id => page.querySelector(`#${id}`).addEventListener("keydown", e => { if (e.key === "Enter") page.querySelector("#adm-login-btn").click(); }));
+  ["adm-user","adm-pass"].forEach(id => {
+    page.querySelector(`#${id}`).addEventListener("keydown", e => { if(e.key==="Enter") page.querySelector("#adm-login-btn").click(); });
+  });
 
   render(page);
 }
 
 function logout() {
-  if (APP.currentUser) fsAddLog({ type: "logout", user: APP.currentUser.name, sid: APP.currentUser.sid, message: `${APP.currentUser.name} signed out.` });
-  APP = { currentUser: null, isAdmin: false, currentModule: null, currentQIndex: 0, quizAnswers: [] };
-  clearSession();
+  if (APP.currentUser) addLog({ type: "logout", user: APP.currentUser.name, sid: APP.currentUser.sid || "", message: `${APP.currentUser.name} signed out.` });
+  APP = { currentUser: null, isAdmin: false, currentModule: null, currentQuiz: null, currentQIndex: 0, attemptCount: 0, quizAnswers: [], scrollPercent: 0 };
   showLogin();
 }
 
 /* ─────────────────────────────────────────────
    STUDENT DASHBOARD
 ───────────────────────────────────────────── */
-async function showDashboard() {
-  showLoading("Loading your progress…");
+function showDashboard() {
   const { name, sid } = APP.currentUser;
   const modules = window.COURSE.modules;
 
-  let studentData;
-  try {
-    studentData = await fsGetStudent(sid) || { progress: { mod_1: { status: "unlocked" } } };
-  } catch { studentData = { progress: { mod_1: { status: "unlocked" } } }; }
-
-  hideLoading();
-
+  // Compute overall progress
   let doneCount = 0;
-  modules.forEach(m => { if (getModProg(studentData, m.id).status === "completed") doneCount++; });
+  modules.forEach(m => {
+    const mp = getModuleProgress(sid, m.id);
+    if (mp.status === "completed") doneCount++;
+  });
   const pct = Math.round((doneCount / modules.length) * 100);
 
   const wrap = el("div");
   wrap.appendChild(buildTopbar(name, false));
+
   const pageWrap = el("div", { class: "page-wrap" });
   const cont = el("div", { class: "container" });
   pageWrap.appendChild(cont);
   wrap.appendChild(pageWrap);
 
+  // Welcome banner with progress ring
   const circumference = 2 * Math.PI * 38;
   const dashOffset = circumference - (pct / 100) * circumference;
-
   cont.innerHTML = `
   <div class="dashboard">
     <div class="dashboard-header">
@@ -463,24 +302,34 @@ async function showDashboard() {
               <circle class="ring-fill" cx="45" cy="45" r="38" stroke-width="7"
                 stroke-dasharray="${circumference}" stroke-dashoffset="${dashOffset}"/>
             </svg>
-            <div class="progress-ring-label"><strong>${pct}%</strong><span>Done</span></div>
+            <div class="progress-ring-label">
+              <strong>${pct}%</strong>
+              <span>Done</span>
+            </div>
           </div>
         </div>
       </div>
     </div>
     <h2 class="section-title">📖 Course Modules</h2>
     <div class="modules-grid" id="modules-grid"></div>
-    ${doneCount === modules.length ? `<div class="completion-banner"><h2>🎉 Course Complete!</h2><p>Congratulations! You have successfully completed all 5 modules of Introduction to Computing.</p></div>` : ""}
+    ${doneCount === modules.length ? `
+    <div class="completion-banner">
+      <h2>🎉 Course Complete!</h2>
+      <p>Congratulations! You have successfully completed all 5 modules of Introduction to Computing.</p>
+    </div>` : ""}
   </div>`;
 
   const grid = cont.querySelector("#modules-grid");
-  modules.forEach(mod => {
-    const mp = getModProg(studentData, mod.id);
+  modules.forEach((mod, i) => {
+    const mp = getModuleProgress(sid, mod.id);
     const isCompleted = mp.status === "completed";
-    const isLocked    = mp.status === "locked";
+    const isLocked = mp.status === "locked";
+    const isUnlocked = mp.status === "unlocked";
 
-    const statusIcon  = isCompleted ? "✅" : (isLocked ? "🔒" : "▶️");
-    const statusClass = isCompleted ? "done" : (isLocked ? "locked-icon" : "active");
+    let statusIcon, statusClass;
+    if (isCompleted) { statusIcon = "✅"; statusClass = "done"; }
+    else if (isLocked) { statusIcon = "🔒"; statusClass = "locked-icon"; }
+    else { statusIcon = "▶️"; statusClass = "active"; }
 
     const card = el("div", { class: `module-card${isLocked ? " locked" : ""}${isCompleted ? " completed" : ""}` });
     card.innerHTML = `
@@ -492,11 +341,17 @@ async function showDashboard() {
           <span class="meta-tag">⏱ ${mod.duration}</span>
           <span class="meta-tag">📝 5 Questions</span>
           ${isCompleted ? `<span class="meta-tag gold">🏆 Score: ${mp.score}/5</span>` : ""}
-          ${isLocked ? `<span class="meta-tag" style="background:#f3f4f6;color:#6b7280;">🔒 Complete previous module first</span>` : ""}
+          ${isLocked ? `<span class="meta-tag" style="background:#f3f4f6;color:#6b7280;">🔒 Complete previous module</span>` : ""}
         </div>
       </div>
-      <div class="module-action"><div class="status-icon ${statusClass}">${statusIcon}</div></div>`;
-    card.onclick = isLocked ? () => toast("Complete the previous module to unlock this one.", "info") : () => showReader(mod.id);
+      <div class="module-action"><div class="status-icon ${statusClass}">${statusIcon}</div></div>
+    `;
+
+    if (!isLocked) {
+      card.onclick = () => showReader(mod.id);
+    } else {
+      card.onclick = () => toast("Complete the previous module to unlock this one.", "info");
+    }
     grid.appendChild(card);
   });
 
@@ -506,19 +361,14 @@ async function showDashboard() {
 /* ─────────────────────────────────────────────
    READER
 ───────────────────────────────────────────── */
-async function showReader(moduleId) {
+function showReader(moduleId) {
   const mod = window.COURSE.modules.find(m => m.id === moduleId);
   if (!mod) return;
   APP.currentModule = moduleId;
   const { name, sid } = APP.currentUser;
+  const mp = getModuleProgress(sid, moduleId);
 
-  showLoading("Loading module…");
-  let studentData;
-  try { studentData = await fsGetStudent(sid) || {}; } catch { studentData = {}; }
-  hideLoading();
-
-  const mp = getModProg(studentData, moduleId);
-  await fsAddLog({ type: "read_start", user: name, sid, module: mod.title, message: `${name} opened Module ${moduleId}: ${mod.title}` });
+  addLog({ type: "read_start", user: name, sid, module: mod.title, message: `${name} opened Module ${moduleId}: ${mod.title}` });
 
   const wrap = el("div");
   wrap.appendChild(buildTopbar(name, false));
@@ -543,37 +393,44 @@ async function showReader(moduleId) {
   </div>
   <div class="reader-nav">
     <button class="btn btn-outline" id="back-btn2" style="background:white;color:var(--kiu-green);border-color:var(--border);">← Back to Dashboard</button>
-    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-      <span id="scroll-hint" style="font-size:.85rem;color:var(--text-muted);">📜 Scroll to the end to unlock the quiz</span>
-      <button class="btn btn-primary btn-lg" id="start-quiz-btn" ${mp.status === "completed" ? "" : "disabled"}>
-        ${mp.status === "completed" ? "Review Quiz ✓" : "Take Quiz →"}
-      </button>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <span id="scroll-hint" style="font-size:.85rem;color:var(--text-muted);">📜 Read to the end to unlock the quiz</span>
+      <button class="btn btn-primary btn-lg" id="start-quiz-btn" disabled>Take Quiz →</button>
     </div>
   </div>`;
 
-  if (mp.status === "completed") cont.querySelector("#scroll-hint").textContent = "✅ Module already completed";
-
-  cont.querySelector("#back-btn").onclick  = showDashboard;
-  cont.querySelector("#back-btn2").onclick = showDashboard;
+  cont.querySelector("#back-btn").onclick = () => showDashboard();
+  cont.querySelector("#back-btn2").onclick = () => showDashboard();
 
   const scrollArea = cont.querySelector("#reader-scroll-area");
-  const quizBtn    = cont.querySelector("#start-quiz-btn");
-  const pageDsp    = cont.querySelector("#page-display");
+  const quizBtn = cont.querySelector("#start-quiz-btn");
+  const pageDisplay = cont.querySelector("#page-display");
   const scrollHint = cont.querySelector("#scroll-hint");
-  let readUnlocked = mp.status === "completed";
 
-  scrollArea.addEventListener("scroll", () => {
+  // If already completed, enable quiz immediately
+  if (mp.status === "completed") {
+    quizBtn.disabled = false;
+    quizBtn.textContent = "Review Quiz ✓";
+    scrollHint.textContent = "✅ Module completed";
+  }
+
+  // Track scroll to "unlock" quiz
+  let readUnlocked = mp.status === "completed";
+  function onScroll() {
     const sh = scrollArea.scrollHeight - scrollArea.clientHeight;
     const pct = sh > 0 ? (scrollArea.scrollTop / sh) * 100 : 100;
-    const pg = Math.min(10, Math.max(1, Math.ceil(pct / 10)));
-    pageDsp.textContent = `Page ${pg} / 10+`;
+    // Simulate 10-page progress
+    const simulatedPage = Math.min(10, Math.max(1, Math.ceil(pct / 10)));
+    pageDisplay.textContent = `Page ${simulatedPage} / 10+`;
     if (pct >= 90 && !readUnlocked) {
       readUnlocked = true;
       quizBtn.disabled = false;
-      scrollHint.textContent = "✅ Reading complete! You can now take the quiz.";
-      toast("Reading complete — quiz is now unlocked!", "success");
+      quizBtn.style.animation = "fadeUp .3s ease";
+      scrollHint.textContent = "✅ Reading complete! Start the quiz.";
+      toast("You've read the material! The quiz is now unlocked.", "success");
     }
-  });
+  }
+  scrollArea.addEventListener("scroll", onScroll);
 
   quizBtn.onclick = () => {
     if (!readUnlocked) { toast("Please finish reading before attempting the quiz.", "info"); return; }
@@ -590,191 +447,224 @@ function startQuiz(moduleId) {
   const mod = window.COURSE.modules.find(m => m.id === moduleId);
   APP.currentModule = moduleId;
   APP.currentQIndex = 0;
-  APP.quizAnswers = mod.quiz.map(() => ({ chosen: null, correct: false, attemptsUsed: 0 }));
-  fsAddLog({ type: "quiz_start", user: APP.currentUser.name, sid: APP.currentUser.sid, module: mod.title, message: `${APP.currentUser.name} started quiz for Module ${moduleId}` });
+  APP.attemptCount = 0;
+  APP.quizAnswers = new Array(mod.quiz.length).fill(null).map(() => ({ chosen: null, correct: false, attemptsUsed: 0 }));
+  addLog({ type: "quiz_start", user: APP.currentUser.name, sid: APP.currentUser.sid, module: mod.title, message: `${APP.currentUser.name} started quiz for Module ${moduleId}` });
   showQuestion(moduleId);
 }
 
 function showQuestion(moduleId) {
   const mod = window.COURSE.modules.find(m => m.id === moduleId);
-  const qi  = APP.currentQIndex;
-  const q   = mod.quiz[qi];
-  const MAX = 3;
-  const rec = APP.quizAnswers[qi];
+  const qi = APP.currentQIndex;
+  const q = mod.quiz[qi];
+  const totalQ = mod.quiz.length;
+  const maxAttempts = 3;
+  const answerRecord = APP.quizAnswers[qi];
+  const attemptsLeft = maxAttempts - answerRecord.attemptsUsed;
 
-  const dotsHTML = mod.quiz.map((_, i) => {
-    let cls = i < qi ? (APP.quizAnswers[i].correct ? "done" : "wrong") : i === qi ? "active" : "";
+  // Build dots
+  const dotsHTML = mod.quiz.map((_, idx) => {
+    let cls = "";
+    if (idx < qi) cls = APP.quizAnswers[idx].correct ? "done" : "wrong";
+    else if (idx === qi) cls = "active";
     return `<div class="q-dot ${cls}"></div>`;
   }).join("");
 
-  const attHTML = (left) => Array.from({ length: MAX }, (_, i) => `<div class="attempt-dot ${i >= left ? "used" : ""}"></div>`).join("");
+  // Attempt dots
+  const attDots = Array.from({ length: maxAttempts }, (_, i) => `<div class="attempt-dot ${i >= attemptsLeft ? "used" : ""}"></div>`).join("");
 
-  // Remove existing overlay
-  document.getElementById("quiz-overlay")?.remove();
   const overlay = el("div", { class: "quiz-overlay", id: "quiz-overlay" });
+  overlay.innerHTML = `
+  <div class="quiz-card">
+    <div class="quiz-header">
+      <div class="quiz-module-tag">Module ${moduleId} — ${mod.title}</div>
+      <h2>📝 Knowledge Check</h2>
+      <div class="quiz-progress-row">${dotsHTML}</div>
+    </div>
+    <div class="question-body">
+      <div class="question-num">Question ${qi + 1} of ${totalQ}</div>
+      <div class="question-text">${q.question}</div>
+    </div>
+    <div class="attempts-row">
+      <span class="attempts-label">Attempts remaining:</span>
+      <div class="attempts-dots" id="att-dots">${attDots}</div>
+    </div>
+    <div class="options-list" id="options-list">
+      ${q.options.map((opt, oi) => `
+        <button class="option-btn" data-idx="${oi}" id="opt-${oi}">
+          <span class="option-letter">${String.fromCharCode(65+oi)}</span>
+          <span>${opt}</span>
+        </button>
+      `).join("")}
+    </div>
+    <div class="feedback-box" id="feedback-box"></div>
+    <div class="quiz-footer">
+      <button class="btn btn-green" id="submit-btn" disabled>Submit Answer</button>
+    </div>
+  </div>`;
 
-  function buildCard(attemptsLeft) {
-    overlay.innerHTML = `
-    <div class="quiz-card">
-      <div class="quiz-header">
-        <div class="quiz-module-tag">Module ${moduleId} — ${mod.title}</div>
-        <h2>📝 Knowledge Check</h2>
-        <div class="quiz-progress-row">${dotsHTML}</div>
-      </div>
-      <div class="question-body">
-        <div class="question-num">Question ${qi + 1} of ${mod.quiz.length}</div>
-        <div class="question-text">${q.question}</div>
-      </div>
-      <div class="attempts-row">
-        <span class="attempts-label">Attempts remaining:</span>
-        <div class="attempts-dots" id="att-dots">${attHTML(attemptsLeft)}</div>
-      </div>
-      <div class="options-list" id="options-list">
-        ${q.options.map((opt, oi) => `
-          <button class="option-btn" data-idx="${oi}" id="opt-${oi}">
-            <span class="option-letter">${String.fromCharCode(65 + oi)}</span>
-            <span>${opt}</span>
-          </button>`).join("")}
-      </div>
-      <div class="feedback-box" id="fb"></div>
-      <div class="quiz-footer">
-        <button class="btn btn-green" id="submit-btn" disabled>Submit Answer</button>
-      </div>
-    </div>`;
+  // Option selection
+  let selectedIdx = null;
+  overlay.querySelectorAll(".option-btn").forEach(btn => {
+    btn.onclick = () => {
+      if (answerRecord.correct) return; // already answered correctly
+      overlay.querySelectorAll(".option-btn").forEach(b => b.classList.remove("selected"));
+      btn.classList.add("selected");
+      selectedIdx = parseInt(btn.getAttribute("data-idx"));
+      overlay.querySelector("#submit-btn").disabled = false;
+    };
+  });
 
-    let selected = null;
-    const getOpts = () => overlay.querySelectorAll(".option-btn");
-    const getSubm = () => overlay.querySelector("#submit-btn");
-    const getFb   = () => overlay.querySelector("#fb");
-
-    getOpts().forEach(btn => {
-      btn.onclick = () => {
-        getOpts().forEach(b => b.classList.remove("selected"));
-        btn.classList.add("selected");
-        selected = parseInt(btn.getAttribute("data-idx"));
-        getSubm().disabled = false;
-      };
-    });
-
-    getSubm().onclick = () => handleSubmit(selected);
-  }
-
-  function handleSubmit(selectedIdx) {
+  // Submit
+  overlay.querySelector("#submit-btn").onclick = () => {
     if (selectedIdx === null) return;
-    rec.attemptsUsed++;
-    rec.chosen = selectedIdx;
     const isCorrect = selectedIdx === q.correct;
+    answerRecord.attemptsUsed++;
+    answerRecord.chosen = selectedIdx;
+
+    const fb = overlay.querySelector("#feedback-box");
     const opts = overlay.querySelectorAll(".option-btn");
     opts.forEach(b => b.disabled = true);
-    const fb   = overlay.querySelector("#fb");
-    const subm = overlay.querySelector("#submit-btn");
 
     if (isCorrect) {
-      rec.correct = true;
+      answerRecord.correct = true;
       opts[q.correct].classList.add("correct");
       fb.className = "feedback-box correct-fb show";
       fb.innerHTML = `✅ <strong>Correct!</strong> ${q.explanation}`;
-      subm.textContent = qi < mod.quiz.length - 1 ? "Next Question →" : "See Results 🏆";
-      subm.disabled = false;
-      subm.onclick = nextOrResults;
+      overlay.querySelector("#submit-btn").textContent = qi < totalQ - 1 ? "Next Question →" : "See Results 🏆";
+      overlay.querySelector("#submit-btn").disabled = false;
+      overlay.querySelector("#submit-btn").onclick = () => {
+        if (qi < totalQ - 1) { APP.currentQIndex++; overlay.remove(); showQuestion(moduleId); }
+        else { overlay.remove(); showResults(moduleId); }
+      };
     } else {
       opts[selectedIdx].classList.add("wrong-choice");
-      const left = MAX - rec.attemptsUsed;
-      overlay.querySelector("#att-dots").innerHTML = attHTML(left);
-
-      if (left <= 0) {
+      const remainAfter = maxAttempts - answerRecord.attemptsUsed;
+      if (remainAfter <= 0) {
+        // Reveal correct answer
         opts[q.correct].classList.add("correct");
         fb.className = "feedback-box wrong-fb show";
-        fb.innerHTML = `❌ <strong>Incorrect.</strong> Correct answer: <strong>${String.fromCharCode(65 + q.correct)}: ${q.options[q.correct]}</strong><br><br>
-          📖 <strong>Suggested Reading:</strong><br>
-          <span class="read-hint" data-sec="${q.hintSection}">📌 ${q.hint}</span>`;
+        fb.innerHTML = `❌ <strong>Incorrect.</strong> The correct answer is <strong>${String.fromCharCode(65+q.correct)}: ${q.options[q.correct]}</strong>.<br><br>
+          📖 <strong>Suggested Reading:</strong> Click below to re-read the relevant section.<br>
+          <span class="read-hint" data-section="${q.hintSection}">📌 Go back and read: "${q.hint}"</span>`;
         fb.querySelector(".read-hint").onclick = () => {
-          overlay.remove(); showReaderAtSection(moduleId, q.hintSection);
+          overlay.remove();
+          showReaderAtSection(moduleId, q.hintSection);
         };
-        subm.textContent = qi < mod.quiz.length - 1 ? "Next Question →" : "See Results 🏆";
-        subm.disabled = false;
-        subm.onclick = nextOrResults;
+        overlay.querySelector("#submit-btn").textContent = qi < totalQ - 1 ? "Next Question →" : "See Results 🏆";
+        overlay.querySelector("#submit-btn").disabled = false;
+        overlay.querySelector("#submit-btn").onclick = () => {
+          if (qi < totalQ - 1) { APP.currentQIndex++; overlay.remove(); showQuestion(moduleId); }
+          else { overlay.remove(); showResults(moduleId); }
+        };
       } else {
         fb.className = "feedback-box wrong-fb show";
-        fb.innerHTML = `❌ <strong>Incorrect.</strong> <strong>${left}</strong> attempt${left !== 1 ? "s" : ""} remaining.<br><br>📖 <em>Hint: ${q.hint}</em>`;
-        // Reset for retry
-        setTimeout(() => {
-          opts.forEach(b => { b.disabled = false; b.classList.remove("selected","wrong-choice"); });
-          subm.disabled = true;
-          subm.onclick = null;
-          subm.textContent = "Submit Answer";
-          // Re-bind selection
-          let sel2 = null;
-          opts.forEach(btn => {
-            btn.onclick = () => {
-              opts.forEach(b => b.classList.remove("selected"));
-              btn.classList.add("selected");
-              sel2 = parseInt(btn.getAttribute("data-idx"));
-              subm.disabled = false;
+        fb.innerHTML = `❌ <strong>Incorrect.</strong> You have <strong>${remainAfter}</strong> attempt${remainAfter !== 1 ? "s" : ""} remaining.<br><br>
+          📖 <em>${q.hint}</em>`;
+        // Update attempt dots
+        const newDots = Array.from({ length: maxAttempts }, (_, i) => `<div class="attempt-dot ${i >= remainAfter ? "used" : ""}"></div>`).join("");
+        overlay.querySelector("#att-dots").innerHTML = newDots;
+        // Re-enable for another attempt
+        opts.forEach(b => { b.disabled = false; b.classList.remove("selected","wrong-choice"); });
+        selectedIdx = null;
+        overlay.querySelector("#submit-btn").disabled = true;
+        overlay.querySelector("#submit-btn").textContent = "Submit Answer";
+        overlay.querySelector("#submit-btn").onclick = null;
+        // Reattach submit
+        overlay.querySelector("#submit-btn").onclick = overlay.querySelector("#submit-btn").onclick; // handled by re-render or keep ref
+        // Re-bind submit (closure issue fix):
+        overlay.querySelector("#submit-btn").onclick = () => {
+          if (selectedIdx === null) return;
+          const isC2 = selectedIdx === q.correct;
+          answerRecord.attemptsUsed++;
+          answerRecord.chosen = selectedIdx;
+          opts.forEach(b => b.disabled = true);
+          if (isC2) {
+            answerRecord.correct = true;
+            opts[q.correct].classList.add("correct");
+            fb.className = "feedback-box correct-fb show";
+            fb.innerHTML = `✅ <strong>Correct!</strong> ${q.explanation}`;
+            overlay.querySelector("#submit-btn").textContent = qi < totalQ - 1 ? "Next Question →" : "See Results 🏆";
+            overlay.querySelector("#submit-btn").disabled = false;
+            overlay.querySelector("#submit-btn").onclick = () => {
+              if (qi < totalQ - 1) { APP.currentQIndex++; overlay.remove(); showQuestion(moduleId); }
+              else { overlay.remove(); showResults(moduleId); }
             };
-          });
-          subm.onclick = () => handleSubmit(sel2);
-        }, 1200);
+          } else {
+            opts[selectedIdx].classList.add("wrong-choice");
+            const rem2 = maxAttempts - answerRecord.attemptsUsed;
+            if (rem2 <= 0) {
+              opts[q.correct].classList.add("correct");
+              fb.className = "feedback-box wrong-fb show";
+              fb.innerHTML = `❌ <strong>Incorrect.</strong> The correct answer is <strong>${String.fromCharCode(65+q.correct)}: ${q.options[q.correct]}</strong>.<br><br>
+                📖 <strong>Suggested Reading:</strong> Click below to re-read the relevant section.<br>
+                <span class="read-hint" data-section="${q.hintSection}">📌 Go back and read: "${q.hint}"</span>`;
+              fb.querySelector(".read-hint").onclick = () => { overlay.remove(); showReaderAtSection(moduleId, q.hintSection); };
+              overlay.querySelector("#submit-btn").textContent = qi < totalQ - 1 ? "Next Question →" : "See Results 🏆";
+              overlay.querySelector("#submit-btn").disabled = false;
+              overlay.querySelector("#submit-btn").onclick = () => {
+                if (qi < totalQ - 1) { APP.currentQIndex++; overlay.remove(); showQuestion(moduleId); }
+                else { overlay.remove(); showResults(moduleId); }
+              };
+            } else {
+              fb.innerHTML = `❌ <strong>Incorrect.</strong> You have <strong>${rem2}</strong> attempt${rem2!==1?"s":""} remaining.<br><br>📖 <em>${q.hint}</em>`;
+              const nd = Array.from({ length: maxAttempts }, (_, i) => `<div class="attempt-dot ${i >= rem2 ? "used" : ""}"></div>`).join("");
+              overlay.querySelector("#att-dots").innerHTML = nd;
+              overlay.remove();
+              showQuestion(moduleId); // Re-render question for final attempt handling
+            }
+          }
+        };
       }
     }
-  }
+  };
 
-  function nextOrResults() {
-    if (qi < mod.quiz.length - 1) {
-      APP.currentQIndex++;
-      overlay.remove();
-      showQuestion(moduleId);
-    } else {
-      overlay.remove();
-      showResults(moduleId);
-    }
-  }
+  // Close on overlay click (outside card)
+  overlay.onclick = e => { if (e.target === overlay) { /* do nothing — force completion */ } };
 
-  buildCard(MAX - rec.attemptsUsed);
   document.getElementById("app").appendChild(overlay);
 }
 
 function showReaderAtSection(moduleId, sectionId) {
-  showReader(moduleId).then?.(() => {});
+  showReader(moduleId);
+  // Scroll to section after render
   setTimeout(() => {
     const sec = document.getElementById(sectionId);
-    if (sec) sec.scrollIntoView({ behavior: "smooth", block: "start" });
-    const btn = document.querySelector("#start-quiz-btn");
-    if (btn) { btn.disabled = false; btn.textContent = "Continue Quiz →"; }
-  }, 600);
+    if (sec) { sec.scrollIntoView({ behavior: "smooth", block: "start" }); }
+    // Re-open quiz after reading
+    setTimeout(() => {
+      const btn = document.querySelector("#start-quiz-btn");
+      if (btn) { btn.disabled = false; btn.textContent = "Continue Quiz →"; }
+    }, 500);
+  }, 400);
 }
 
 /* ─────────────────────────────────────────────
    RESULTS
 ───────────────────────────────────────────── */
-async function showResults(moduleId) {
-  const mod  = window.COURSE.modules.find(m => m.id === moduleId);
+function showResults(moduleId) {
+  const mod = window.COURSE.modules.find(m => m.id === moduleId);
   const { name, sid } = APP.currentUser;
   const score = APP.quizAnswers.filter(a => a.correct).length;
-  const pass  = score >= 3;
+  const pass = score >= 3; // Pass threshold: 3/5
 
-  showLoading("Saving your results…");
-  try {
-    const studentData = await fsGetStudent(sid) || {};
-    setModProg(studentData, moduleId, { status: "completed", score, pass, completedAt: new Date().toISOString() });
+  saveModuleProgress(sid, moduleId, {
+    status: "completed",
+    score,
+    pass,
+    completedAt: new Date().toISOString(),
+  });
+  addLog({ type: "quiz_complete", user: name, sid, module: mod.title, score, pass, message: `${name} completed Module ${moduleId} quiz. Score: ${score}/5. ${pass ? "PASSED" : "FAILED"}.` });
 
-    // Unlock next module
-    const nextId = moduleId + 1;
-    const nextMod = window.COURSE.modules.find(m => m.id === nextId);
-    if (nextMod) {
-      const nmp = getModProg(studentData, nextId);
-      if (nmp.status === "locked") setModProg(studentData, nextId, { status: "unlocked" });
+  // Unlock next module
+  const nextId = moduleId + 1;
+  const nextMod = window.COURSE.modules.find(m => m.id === nextId);
+  if (nextMod) {
+    const nmp = getModuleProgress(sid, nextId);
+    if (nmp.status === "locked") {
+      saveModuleProgress(sid, nextId, { status: "unlocked" });
     }
-    await fsSaveStudent(sid, studentData);
-    await fsAddLog({ type: "quiz_complete", user: name, sid, module: mod.title, score, pass, message: `${name} (${sid}) completed Module ${moduleId}. Score: ${score}/5. ${pass ? "PASSED ✅" : "FAILED ❌"}` });
-    hideLoading();
-  } catch (err) {
-    hideLoading();
-    console.error("Save error:", err);
-    toast("Could not save results to server. Check connection.", "warn");
   }
-
-  const nextMod2 = window.COURSE.modules.find(m => m.id === moduleId + 1);
 
   const overlay = el("div", { class: "quiz-overlay" });
   overlay.innerHTML = `
@@ -790,14 +680,14 @@ async function showResults(moduleId) {
       </div>
       <h3>${pass ? "Module Passed!" : "Module Attempted"}</h3>
       <p>${pass
-        ? `You scored ${score} out of 5. ${nextMod2 ? `Module ${moduleId + 1} is now unlocked!` : "You have completed all modules — well done!"}`
-        : `You scored ${score} out of 5. Review the reading material and try again.`}</p>
+        ? `Excellent work! You scored ${score} out of 5. ${nextMod ? `Module ${nextId} has been unlocked.` : "You have completed all modules!"}`
+        : `You scored ${score} out of 5. Don't worry — review the reading material and try again. You can revisit the module anytime.`}</p>
     </div>
-    <div style="margin:20px 0;">
+    <div style="margin:24px 0;">
       ${APP.quizAnswers.map((a, i) => {
         const q = mod.quiz[i];
         return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);font-size:.88rem;">
-          <span>${a.correct ? "✅" : "❌"}</span>
+          <span style="font-size:1.1rem;">${a.correct ? "✅" : "❌"}</span>
           <span style="flex:1;color:var(--text-dark);">Q${i+1}: ${q.question.substring(0, 65)}…</span>
           <span class="pill ${a.correct ? "pill-green" : "pill-red"}">${a.correct ? "Correct" : "Wrong"}</span>
         </div>`;
@@ -805,44 +695,33 @@ async function showResults(moduleId) {
     </div>
     <div class="quiz-footer" style="justify-content:space-between;flex-wrap:wrap;gap:10px;">
       ${!pass ? `<button class="btn btn-outline" id="retry-btn" style="color:var(--kiu-green);border-color:var(--kiu-green);">🔄 Retry Quiz</button>` : ""}
-      <button class="btn btn-primary btn-lg" id="continue-btn">${nextMod2 && pass ? "Next Module →" : "Back to Dashboard"}</button>
+      <button class="btn btn-primary btn-lg" id="continue-btn">${nextMod && pass ? `Next Module →` : "Back to Dashboard"}</button>
     </div>
   </div>`;
 
-  overlay.querySelector("#retry-btn")?.addEventListener("click", () => { overlay.remove(); startQuiz(moduleId); });
+  const retryBtn = overlay.querySelector("#retry-btn");
+  if (retryBtn) retryBtn.onclick = () => { overlay.remove(); startQuiz(moduleId); };
+
   overlay.querySelector("#continue-btn").onclick = () => {
     overlay.remove();
-    nextMod2 && pass ? showReader(moduleId + 1) : showDashboard();
+    if (nextMod && pass) {
+      showReader(nextId);
+    } else {
+      showDashboard();
+    }
   };
+
   document.getElementById("app").appendChild(overlay);
 }
 
 /* ─────────────────────────────────────────────
-   ADMIN DASHBOARD  ← NOW READS FROM FIRESTORE
-   Shows ALL students from any device/browser
+   ADMIN DASHBOARD
 ───────────────────────────────────────────── */
-async function showAdminDashboard() {
-  showLoading("Loading all students from database…");
-
-  let allStudents = [], logs = [];
-  try {
-    [allStudents, logs] = await Promise.all([fsGetAllStudents(), fsGetLogs(100)]);
-  } catch (err) {
-    hideLoading();
-    toast("Error loading data: " + err.message, "error");
-    allStudents = []; logs = [];
-  }
-  hideLoading();
-
+function showAdminDashboard() {
+  const db = getDB();
+  const logs = getLogs();
+  const users = Object.values(db.users);
   const modules = window.COURSE.modules;
-  let totalCompleted = 0, totalPassed = 0;
-  allStudents.forEach(u => {
-    modules.forEach(m => {
-      const mp = getModProg(u, m.id);
-      if (mp.status === "completed") totalCompleted++;
-      if (mp.status === "completed" && mp.pass) totalPassed++;
-    });
-  });
 
   const wrap = el("div");
   wrap.appendChild(buildTopbar("Administrator", true));
@@ -851,186 +730,181 @@ async function showAdminDashboard() {
   pageWrap.appendChild(cont);
   wrap.appendChild(pageWrap);
 
+  // Compute stats
+  let totalCompleted = 0, totalPassed = 0;
+  users.forEach(u => {
+    const sid = u.sid;
+    modules.forEach(m => {
+      const mp = getModuleProgress(sid, m.id);
+      if (mp.status === "completed") totalCompleted++;
+      if (mp.status === "completed" && mp.pass) totalPassed++;
+    });
+  });
+
   cont.innerHTML = `
   <div class="admin-header">
     <div>
       <h1>🔑 Administrator Dashboard</h1>
       <p>Monitor all student activity across ICT 1101 — Introduction to Computing</p>
-      <p style="font-size:.78rem;margin-top:6px;opacity:.7;">${DEMO_MODE ? "⚠ Demo Mode — data from this device only" : "🟢 Live Firebase — showing ALL students from all devices"}</p>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
-      <button class="btn btn-primary" id="refresh-btn">🔄 Refresh</button>
       <button class="btn btn-primary" id="dl-csv-btn">⬇ Download CSV</button>
       <button class="btn btn-outline" id="dl-log-btn">⬇ Download Logs</button>
     </div>
   </div>
-
-  <!-- Stats -->
   <div class="stats-grid">
-    <div class="stat-card"><div class="stat-icon">👥</div><div class="stat-num" id="stat-students">${allStudents.length}</div><div class="stat-label">Registered Students</div></div>
+    <div class="stat-card"><div class="stat-icon">👥</div><div class="stat-num">${users.length}</div><div class="stat-label">Registered Students</div></div>
     <div class="stat-card"><div class="stat-icon">✅</div><div class="stat-num">${totalCompleted}</div><div class="stat-label">Modules Completed</div></div>
     <div class="stat-card"><div class="stat-icon">🏆</div><div class="stat-num">${totalPassed}</div><div class="stat-label">Modules Passed</div></div>
     <div class="stat-card"><div class="stat-icon">📚</div><div class="stat-num">${modules.length}</div><div class="stat-label">Total Modules</div></div>
     <div class="stat-card"><div class="stat-icon">📋</div><div class="stat-num">${logs.length}</div><div class="stat-label">Activity Events</div></div>
   </div>
 
-  <!-- Student Table -->
+  <!-- Student Progress Table -->
   <div class="table-wrap" style="margin-bottom:28px;">
     <div class="table-head">
-      <h3>📊 Student Progress <span style="font-size:.75rem;font-weight:400;color:var(--text-muted);margin-left:8px;">(${allStudents.length} student${allStudents.length !== 1 ? "s" : ""} total)</span></h3>
-      <input class="search-box" id="student-search" placeholder="🔍 Search by name or student no…" type="text">
+      <h3>📊 Student Progress</h3>
+      <input class="search-box" id="student-search" placeholder="🔍 Search student…" type="text">
     </div>
     <div style="overflow-x:auto;">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Student Name</th>
-            <th>Student No.</th>
-            <th>Registered</th>
-            ${modules.map(m => `<th>M${m.id}</th>`).join("")}
-            <th>Overall</th>
-          </tr>
-        </thead>
-        <tbody id="student-tbody"></tbody>
-      </table>
+    <table class="data-table" id="student-table">
+      <thead>
+        <tr>
+          <th>Student Name</th>
+          <th>Student No.</th>
+          <th>Registered</th>
+          ${modules.map(m => `<th>M${m.id}</th>`).join("")}
+          <th>Overall</th>
+        </tr>
+      </thead>
+      <tbody id="student-tbody">
+      </tbody>
+    </table>
     </div>
   </div>
 
   <!-- Activity Log -->
   <div class="table-wrap">
     <div class="table-head">
-      <h3>🕐 Activity Log <span style="font-size:.75rem;font-weight:400;color:var(--text-muted);">(latest ${logs.length})</span></h3>
-      <div style="display:flex;gap:8px;">
-        <button class="btn btn-sm btn-danger" id="clear-log-btn">🗑 Clear Logs</button>
-      </div>
+      <h3>🕐 Activity Log (latest ${Math.min(logs.length, 50)})</h3>
+      <button class="btn btn-sm btn-danger" id="clear-log-btn">🗑 Clear Logs</button>
     </div>
-    <div class="activity-log" id="activity-log" style="max-height:400px;overflow-y:auto;"></div>
-  </div>`;
+    <div class="activity-log" id="activity-log"></div>
+  </div>
+  `;
 
-  /* ── Render student rows ── */
-  function renderRows(filter = "") {
+  // Populate student rows
+  function renderStudents(filter = "") {
     const tbody = cont.querySelector("#student-tbody");
     tbody.innerHTML = "";
-    const filtered = allStudents.filter(u =>
-      u.name?.toLowerCase().includes(filter.toLowerCase()) ||
-      u.sid?.toLowerCase().includes(filter.toLowerCase())
-    );
+    const filtered = users.filter(u => u.name.toLowerCase().includes(filter.toLowerCase()) || u.sid.toLowerCase().includes(filter.toLowerCase()));
     if (filtered.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="${4 + modules.length + 1}" style="text-align:center;padding:28px;color:var(--text-muted);">${filter ? "No students match your search." : "No students registered yet."}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="${3 + modules.length + 1}" style="text-align:center;padding:24px;color:var(--text-muted);">No students found.</td></tr>`;
       return;
     }
-    filtered.forEach((u, idx) => {
-      let done = 0;
-      const cells = modules.map(m => {
-        const mp = getModProg(u, m.id);
-        if (mp.status === "completed") done++;
-        const cls  = mp.status === "completed" ? (mp.pass ? "pill-green" : "pill-red") : mp.status === "unlocked" ? "pill-gold" : "pill-gray";
-        const text = mp.status === "completed" ? `${mp.score}/5${mp.pass ? " ✓" : " ✗"}` : mp.status === "unlocked" ? "Open" : "Locked";
-        return `<td><span class="pill ${cls}" style="white-space:nowrap;">${text}</span></td>`;
-      }).join("");
+    filtered.forEach(u => {
       const tr = document.createElement("tr");
+      let doneCount = 0, totalScore = 0;
+      const cells = modules.map(m => {
+        const mp = getModuleProgress(u.sid, m.id);
+        if (mp.status === "completed") { doneCount++; totalScore += (mp.score || 0); }
+        const pillClass = mp.status === "completed" ? (mp.pass ? "pill-green" : "pill-red") : (mp.status === "unlocked" ? "pill-gold" : "pill-gray");
+        const pillText = mp.status === "completed" ? `${mp.score}/5` : (mp.status === "unlocked" ? "Open" : "Locked");
+        return `<td><span class="pill ${pillClass}">${pillText}</span></td>`;
+      }).join("");
+      const overall = `${doneCount}/${modules.length} (${Math.round(doneCount / modules.length * 100)}%)`;
       tr.innerHTML = `
-        <td style="color:var(--text-muted);font-size:.8rem;">${idx + 1}</td>
         <td><strong>${u.name}</strong></td>
-        <td><code style="font-size:.8rem;">${u.sid}</code></td>
-        <td style="font-size:.8rem;color:var(--text-muted);">${u.registeredAt ? new Date(u.registeredAt).toLocaleDateString("en-UG", { day:"2-digit", month:"short", year:"numeric" }) : "—"}</td>
+        <td><code style="font-size:.82rem;">${u.sid}</code></td>
+        <td style="font-size:.82rem;color:var(--text-muted);">${u.registeredAt ? new Date(u.registeredAt).toLocaleDateString("en-UG") : "—"}</td>
         ${cells}
-        <td><span class="pill ${done === modules.length ? "pill-green" : done > 0 ? "pill-gold" : "pill-gray"}">${done}/${modules.length} (${Math.round(done/modules.length*100)}%)</span></td>`;
+        <td><span class="pill ${doneCount === modules.length ? "pill-green" : "pill-gold"}">${overall}</span></td>
+      `;
       tbody.appendChild(tr);
     });
   }
-  renderRows();
-  cont.querySelector("#student-search").oninput = e => renderRows(e.target.value);
+  renderStudents();
+  cont.querySelector("#student-search").oninput = e => renderStudents(e.target.value);
 
-  /* ── Activity log ── */
+  // Activity log
   const logWrap = cont.querySelector("#activity-log");
-  if (logs.length === 0) {
+  const recentLogs = logs.slice(0, 50);
+  if (recentLogs.length === 0) {
     logWrap.innerHTML = `<div class="activity-item"><span style="color:var(--text-muted);">No activity recorded yet.</span></div>`;
   } else {
-    logs.forEach(log => {
+    recentLogs.forEach(log => {
       const d = new Date(log.ts);
-      const timeStr = isNaN(d) ? log.ts : `${d.toLocaleDateString("en-UG")} ${d.toLocaleTimeString("en-UG",{hour:"2-digit",minute:"2-digit"})}`;
-      const dot = log.type === "quiz_complete" ? (log.pass ? "var(--kiu-green-mid)" : "#e74c3c") : log.type === "registration" ? "var(--kiu-gold)" : "var(--kiu-green-light)";
+      const timeStr = `${d.toLocaleDateString("en-UG")} ${d.toLocaleTimeString("en-UG", { hour: "2-digit", minute: "2-digit" })}`;
       const div = el("div", { class: "activity-item" });
       div.innerHTML = `
-        <div class="activity-dot" style="background:${dot}"></div>
-        <span style="flex:1;font-size:.86rem;">${log.message || log.type}</span>
+        <div class="activity-dot" style="background:${log.type === "quiz_complete" ? (log.pass ? "var(--kiu-green-mid)" : "#e74c3c") : "var(--kiu-gold)"}"></div>
+        <span style="flex:1;">${log.message || log.type}</span>
         ${log.type === "quiz_complete" ? `<span class="pill ${log.pass ? "pill-green" : "pill-red"}">${log.score}/5</span>` : ""}
-        <span class="activity-time">${timeStr}</span>`;
+        <span class="activity-time">${timeStr}</span>
+      `;
       logWrap.appendChild(div);
     });
   }
 
-  /* ── Controls ── */
-  cont.querySelector("#refresh-btn").onclick = showAdminDashboard;
-
-  cont.querySelector("#clear-log-btn").onclick = async () => {
-    if (!confirm("Clear all activity logs? This cannot be undone.")) return;
-    showLoading("Clearing logs…");
-    await fsClearLogs();
-    hideLoading();
-    toast("Logs cleared.", "info");
-    showAdminDashboard();
+  // Clear log
+  cont.querySelector("#clear-log-btn").onclick = () => {
+    if (confirm("Clear all activity logs? This cannot be undone.")) {
+      localStorage.setItem(LOG_KEY, JSON.stringify([]));
+      toast("Activity logs cleared.", "info");
+      showAdminDashboard();
+    }
   };
 
+  // Download CSV
   cont.querySelector("#dl-csv-btn").onclick = () => {
-    let csv = `"#","Student Name","Student Number","Registered"`;
-    modules.forEach(m => { csv += `,"Module ${m.id} Score","Module ${m.id} Status","Module ${m.id} Pass"`; });
-    csv += `,"Overall Progress"\n`;
-    allStudents.forEach((u, idx) => {
+    let csv = "Student Name,Student Number,Registered";
+    modules.forEach(m => { csv += `,Module ${m.id} Score,Module ${m.id} Status`; });
+    csv += ",Overall Progress\n";
+    users.forEach(u => {
+      let row = `"${u.name}","${u.sid}","${u.registeredAt ? new Date(u.registeredAt).toLocaleDateString() : ""}"`;
       let done = 0;
-      let row  = `"${idx+1}","${u.name}","${u.sid}","${u.registeredAt ? new Date(u.registeredAt).toLocaleDateString() : ""}"`;
       modules.forEach(m => {
-        const mp = getModProg(u, m.id);
+        const mp = getModuleProgress(u.sid, m.id);
+        row += `,"${mp.score != null ? mp.score + "/5" : "—"}","${mp.status}"`;
         if (mp.status === "completed") done++;
-        row += `,"${mp.score != null ? mp.score+"/5" : "—"}","${mp.status}","${mp.pass ? "Yes" : mp.status === "completed" ? "No" : "—"}"`;
       });
       row += `,"${done}/${modules.length}"`;
       csv += row + "\n";
     });
-    dlFile("KIU_LMS_Student_Progress.csv", csv, "text/csv");
+    downloadFile("KIU_LMS_Student_Progress.csv", csv, "text/csv");
     toast("CSV downloaded!", "success");
   };
 
+  // Download Logs
   cont.querySelector("#dl-log-btn").onclick = () => {
-    let txt = `KIU-Learners Pace — Activity Log\nGenerated: ${new Date().toLocaleString()}\n${"=".repeat(70)}\n\n`;
+    let txt = "KIU-Learners Pace — Activity Log\n";
+    txt += "Generated: " + new Date().toLocaleString() + "\n";
+    txt += "=".repeat(70) + "\n\n";
     logs.forEach(log => {
       const d = new Date(log.ts);
-      txt += `[${isNaN(d) ? log.ts : d.toLocaleString()}] ${log.message || log.type}\n`;
+      txt += `[${d.toLocaleString()}] ${log.message || log.type}\n`;
     });
-    dlFile("KIU_LMS_Activity_Log.txt", txt, "text/plain");
+    downloadFile("KIU_LMS_Activity_Log.txt", txt, "text/plain");
     toast("Activity log downloaded!", "success");
   };
 
   render(wrap);
 }
 
-function dlFile(name, content, mime) {
-  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([content], { type: mime })), download: name });
-  a.click(); URL.revokeObjectURL(a.href);
+function downloadFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
 }
 
 /* ─────────────────────────────────────────────
    INIT
 ───────────────────────────────────────────── */
 window.addEventListener("DOMContentLoaded", () => {
-  initFirebase();
-  setTimeout(async () => {
-    // Check for an existing session
-    const session = loadSession();
-    if (session) {
-      APP.currentUser = { name: session.name, sid: session.sid };
-      APP.isAdmin     = session.isAdmin || false;
-      if (APP.isAdmin) { showAdminDashboard(); return; }
-      showDashboard();
-      return;
-    }
-    // No session — show setup prompt if Firebase not configured
-    if (DEMO_MODE) {
-      showSetupScreen();
-    } else {
-      showLogin();
-    }
-  }, 1700);
+  // Wait for splash to finish, then show login
+  setTimeout(() => {
+    showLogin();
+  }, 1600);
 });
