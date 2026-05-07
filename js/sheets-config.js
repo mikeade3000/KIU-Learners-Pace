@@ -16,7 +16,7 @@
    11. Copy the Web App URL and paste it below
    ================================================================ */
 
-window.KIU_API_URL = "PASTE_YOUR_WEB_APP_URL_HERE";
+window.KIU_API_URL = "https://script.google.com/macros/s/AKfycbzg8ZO8mnbhbQA-d-06eqO14vujReQzdGmiXn8jQtWgOSn-yaH7gBhpnFqx0cSbgEN0/exec";
 
 /* Example of what the URL looks like:
    "https://script.google.com/macros/s/AKfycbx.../exec"
