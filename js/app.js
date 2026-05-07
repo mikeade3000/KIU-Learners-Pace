@@ -42,15 +42,18 @@ function initAPI() {
 async function apiCall(action, payload = {}) {
   if (!API_READY) throw new Error("API not configured");
   const body = JSON.stringify({ action, ...payload });
-  const res = await fetch(API_URL, {
+  const res  = await fetch(API_URL, {
     method:   "POST",
     body,
     headers:  { "Content-Type": "text/plain;charset=utf-8" },
     redirect: "follow",
   });
-  if (!res.ok) throw new Error("HTTP " + res.status);
-  const json = await res.json();
-  if (json.error) throw new Error(json.error);
+  const text = await res.text();
+  if (!text) throw new Error("Empty response from server");
+  let json;
+  try { json = JSON.parse(text); }
+  catch { throw new Error("Invalid response: " + text.substring(0, 100)); }
+  if (json && json.error) throw new Error(json.error);
   return json;
 }
 
