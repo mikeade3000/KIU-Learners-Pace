@@ -43,17 +43,13 @@ async function apiCall(action, payload = {}) {
   if (!API_READY) throw new Error("API not configured");
   const body = JSON.stringify({ action, ...payload });
   const res  = await fetch(API_URL, {
-    method:   "POST",
+    method:  "POST",
     body,
-    headers:  { "Content-Type": "text/plain;charset=utf-8" },
-    redirect: "follow",
+    headers: { "Content-Type": "text/plain" }, // Apps Script needs text/plain for CORS
   });
-  const text = await res.text();
-  if (!text) throw new Error("Empty response from server");
-  let json;
-  try { json = JSON.parse(text); }
-  catch { throw new Error("Invalid response: " + text.substring(0, 100)); }
-  if (json && json.error) throw new Error(json.error);
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const json = await res.json();
+  if (json.error) throw new Error(json.error);
   return json;
 }
 
@@ -284,7 +280,7 @@ function showLogin() {
         <span class="badge">📚 5 Modules</span>
         <span class="badge">🎯 Interactive Quizzes</span>
         <span class="badge badge-gold">🏆 Track Progress</span>
-        <span class="badge">🌐 ICT 1101</span>
+        <span class="badge">🌐 MIS 2101</span>
       </div>
       ${DEMO_MODE
         ? `<div style="background:rgba(212,160,23,.2);border:1px solid var(--kiu-gold);border-radius:var(--radius-sm);padding:10px 16px;max-width:300px;text-align:center;">
@@ -332,7 +328,7 @@ function showLogin() {
           <button class="btn btn-primary btn-block btn-lg" id="adm-btn" style="margin-top:8px;">Access Dashboard →</button>
         </div>
         <div class="divider"></div>
-        <p style="text-align:center;font-size:.78rem;color:var(--text-muted);">ICT 1101 — Introduction to Computing &nbsp;|&nbsp; © 2025 KIU</p>
+        <p style="text-align:center;font-size:.78rem;color:var(--text-muted);">MIS 2101 — Management Information Systems &nbsp;|&nbsp; © 2025 KIU</p>
       </div>
     </div>
   </div>`;
@@ -451,7 +447,7 @@ async function showDashboard() {
       <div class="welcome-banner">
         <div class="welcome-text">
           <h1>Welcome, ${name.split(" ")[0]}! 👋</h1>
-          <p>Introduction to Computing — ICT 1101 &nbsp;|&nbsp; ${done} of ${modules.length} modules completed</p>
+          <p>Management Information Systems — MIS 2101 &nbsp;|&nbsp; ${done} of ${modules.length} modules completed</p>
         </div>
         <div class="progress-overview">
           <div class="progress-ring-wrap">
@@ -520,53 +516,78 @@ async function showReader(moduleId) {
   const ct = el("div", { class: "container reader-page" });
   pw.appendChild(ct); wrap.appendChild(pw);
 
+  const alreadyDone = mp.status === "completed";
+
   ct.innerHTML = `
   <div class="reader-header">
     <div class="reader-header-left">
       <h2>Module ${moduleId}: ${mod.title}</h2>
       <p>${mod.description}</p>
     </div>
-    <div class="reader-progress">
-      <span class="page-counter" id="pg-disp">Page 1 / 10+</span>
+    <div class="reader-progress" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span style="font-size:.75rem;color:var(--kiu-green);background:var(--kiu-green-pale);padding:4px 12px;border-radius:99px;font-weight:600;">⏱ ${mod.duration}</span>
       <button class="btn btn-outline" id="back-btn" style="background:var(--kiu-green-pale);color:var(--kiu-green);border-color:var(--border);">← Dashboard</button>
     </div>
   </div>
+
   <div class="reader-body" id="rscroll">
     <div class="reading-content">${mod.content}</div>
-  </div>
-  <div class="reader-nav">
-    <button class="btn btn-outline" id="back-btn2" style="background:white;color:var(--kiu-green);border-color:var(--border);">← Back to Dashboard</button>
-    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-      <span id="scroll-hint" style="font-size:.85rem;color:var(--text-muted);">📜 Scroll to the end to unlock the quiz</span>
-      <button class="btn btn-primary btn-lg" id="quiz-btn" ${mp.status === "completed" ? "" : "disabled"}>
-        ${mp.status === "completed" ? "Review Quiz ✓" : "Take Quiz →"}
-      </button>
+
+    <!-- Reading Confirmation -->
+    <div style="margin-top:52px;padding-top:32px;border-top:2px solid var(--kiu-green-pale);">
+      <div id="confirm-box" style="background:${alreadyDone ? "var(--kiu-green-pale)" : "#fffbeb"};border:2px solid ${alreadyDone ? "var(--kiu-green-mid)" : "var(--kiu-gold)"};border-radius:var(--radius-lg);padding:28px 32px;">
+        <p style="font-family:var(--font-display);font-size:1.15rem;color:var(--kiu-green-deep);margin-bottom:10px;">
+          ${alreadyDone ? "✅ You have already completed this module." : "📋 Reading Confirmation"}
+        </p>
+        <p style="font-size:.9rem;color:var(--text-mid);line-height:1.75;margin-bottom:${alreadyDone ? "0" : "20px"};">
+          ${alreadyDone
+            ? "You completed this module and passed the quiz. You may review the content above or retake the quiz."
+            : "Before proceeding to the quiz, please confirm that you have thoroughly read and understood all the material in this module — including all sections, key concepts, tables, and examples presented above."}
+        </p>
+        ${alreadyDone ? "" : `
+        <label id="chk-label" style="display:flex;align-items:flex-start;gap:16px;cursor:pointer;padding:16px 20px;background:white;border-radius:var(--radius-md);border:2px solid var(--border);transition:all .25s;">
+          <input type="checkbox" id="read-chk" style="width:22px;height:22px;cursor:pointer;accent-color:var(--kiu-green);flex-shrink:0;margin-top:2px;">
+          <span style="font-size:.92rem;color:var(--text-dark);line-height:1.65;">
+            <strong style="color:var(--kiu-green-deep);">I confirm that I have read and understood all the material in<br>Module ${moduleId}: ${mod.title}.</strong><br>
+            <span style="color:var(--text-muted);font-size:.85rem;">I am ready to attempt the quiz and accept responsibility for my answers.</span>
+          </span>
+        </label>`}
+      </div>
     </div>
+  </div>
+
+  <div class="reader-nav" style="margin-top:20px;padding-bottom:40px;">
+    <button class="btn btn-outline" id="back-btn2" style="background:white;color:var(--kiu-green);border-color:var(--border);">← Back to Dashboard</button>
+    <button class="btn btn-primary btn-lg" id="quiz-btn" ${alreadyDone ? "" : "disabled"} style="min-width:200px;">
+      ${alreadyDone ? "Review Quiz ✓" : "Take Quiz →"}
+    </button>
   </div>`;
 
-  if (mp.status === "completed") ct.querySelector("#scroll-hint").textContent = "✅ Module already completed";
   ct.querySelector("#back-btn").onclick  = showDashboard;
   ct.querySelector("#back-btn2").onclick = showDashboard;
 
-  const scrl = ct.querySelector("#rscroll");
   const qBtn = ct.querySelector("#quiz-btn");
-  const pgD  = ct.querySelector("#pg-disp");
-  const hint = ct.querySelector("#scroll-hint");
-  let unlocked = mp.status === "completed";
 
-  scrl.addEventListener("scroll", () => {
-    const sh  = scrl.scrollHeight - scrl.clientHeight;
-    const pct = sh > 0 ? (scrl.scrollTop / sh) * 100 : 100;
-    pgD.textContent = `Page ${Math.min(10, Math.max(1, Math.ceil(pct / 10)))} / 10+`;
-    if (pct >= 90 && !unlocked) {
-      unlocked = true;
-      qBtn.disabled = false;
-      hint.textContent = "✅ Reading complete! You can now take the quiz.";
-      toast("Reading complete — quiz is now unlocked!", "success");
-    }
-  });
+  if (!alreadyDone) {
+    const chk   = ct.querySelector("#read-chk");
+    const label = ct.querySelector("#chk-label");
+    chk.addEventListener("change", () => {
+      if (chk.checked) {
+        qBtn.disabled = false;
+        label.style.borderColor = "var(--kiu-green-mid)";
+        label.style.background  = "var(--kiu-green-pale)";
+        ct.querySelector("#confirm-box").style.borderColor = "var(--kiu-green-mid)";
+        ct.querySelector("#confirm-box").style.background  = "var(--kiu-green-pale)";
+        toast("Reading confirmed ✅ — quiz is now unlocked!", "success");
+      } else {
+        qBtn.disabled = true;
+        label.style.borderColor = "var(--border)";
+        label.style.background  = "white";
+      }
+    });
+  }
 
-  qBtn.onclick = () => { if (!unlocked) { toast("Please finish reading first.", "info"); return; } startQuiz(moduleId); };
+  qBtn.onclick = () => startQuiz(moduleId);
   render(wrap);
 }
 
@@ -817,7 +838,7 @@ async function showAdminDashboard() {
   <div class="admin-header">
     <div>
       <h1>🔑 Administrator Dashboard</h1>
-      <p>Monitor all student activity across ICT 1101 — Introduction to Computing</p>
+      <p>Monitor all student activity across MIS 2101 — Management Information Systems</p>
       <p style="font-size:.75rem;opacity:.7;margin-top:4px;">
         ${DEMO_MODE
           ? "⚠ Demo Mode — showing students from this device only"
