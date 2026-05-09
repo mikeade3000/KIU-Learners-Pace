@@ -280,14 +280,14 @@ function showLogin() {
         <span class="badge">📚 5 Modules</span>
         <span class="badge">🎯 Interactive Quizzes</span>
         <span class="badge badge-gold">🏆 Track Progress</span>
-        <span class="badge">🌐 MIS 2101</span>
+        <span class="badge">🌐 MIS</span>
       </div>
       ${DEMO_MODE
         ? `<div style="background:rgba(212,160,23,.2);border:1px solid var(--kiu-gold);border-radius:var(--radius-sm);padding:10px 16px;max-width:300px;text-align:center;">
              <p style="color:var(--kiu-gold-light);font-size:.8rem;font-weight:600;">⚠ Demo Mode — configure Google Sheets for cross-device access</p>
            </div>`
         : `<div style="background:rgba(76,200,122,.15);border:1px solid rgba(76,200,122,.4);border-radius:var(--radius-sm);padding:8px 16px;">
-             <p style="color:#4cc87a;font-size:.8rem;font-weight:600;">🟢 Connected — all devices sync to Google Sheets</p>
+             <p style="color:#4cc87a;font-size:.8rem;font-weight:600;">🟢 Connected — all devices sync</p>
            </div>`}
     </div>
     <div class="login-panel">
@@ -328,7 +328,7 @@ function showLogin() {
           <button class="btn btn-primary btn-block btn-lg" id="adm-btn" style="margin-top:8px;">Access Dashboard →</button>
         </div>
         <div class="divider"></div>
-        <p style="text-align:center;font-size:.78rem;color:var(--text-muted);">MIS 2101 — Management Information Systems &nbsp;|&nbsp; © 2025 KIU</p>
+        <p style="text-align:center;font-size:.78rem;color:var(--text-muted);">Management Information Systems &nbsp;|&nbsp; © 2075 KIU</p>
       </div>
     </div>
   </div>`;
@@ -447,7 +447,7 @@ async function showDashboard() {
       <div class="welcome-banner">
         <div class="welcome-text">
           <h1>Welcome, ${name.split(" ")[0]}! 👋</h1>
-          <p>Management Information Systems — MIS 2101 &nbsp;|&nbsp; ${done} of ${modules.length} modules completed</p>
+          <p>Management Information Systems — MIS &nbsp;|&nbsp; ${done} of ${modules.length} modules completed</p>
         </div>
         <div class="progress-overview">
           <div class="progress-ring-wrap">
@@ -838,7 +838,7 @@ async function showAdminDashboard() {
   <div class="admin-header">
     <div>
       <h1>🔑 Administrator Dashboard</h1>
-      <p>Monitor all student activity across MIS 2101 — Management Information Systems</p>
+      <p>Monitor all student activity across Management Information Systems</p>
       <p style="font-size:.75rem;opacity:.7;margin-top:4px;">
         ${DEMO_MODE
           ? "⚠ Demo Mode — showing students from this device only"
