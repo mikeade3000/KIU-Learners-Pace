@@ -807,7 +807,7 @@ async function showResults(moduleId) {
    ADMIN DASHBOARD — reads ALL students from Google Sheets
 ───────────────────────────────────────────── */
 async function showAdminDashboard() {
-  showLoading("Fetching all students from Google Sheets…");
+  showLoading("Fetching all students..........");
   let allStudents = [], logs = [];
   try {
     [allStudents, logs] = await Promise.all([dbGetAllStudents(), dbGetLogs(150)]);
